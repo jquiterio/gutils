@@ -13,10 +13,11 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"hash"
+	"io"
 	"math/rand"
 	"regexp"
+	"strings"
 )
 
 // as in https://datatracker.ietf.org/doc/html/rfc4122#section-4.1.1
@@ -26,6 +27,8 @@ const (
 	VarMicrosoft byte = 0x20
 	VarFuture    byte = 0x00
 )
+
+//const hexPattern = `({?|urn:uuid:)([aA-fF0-9]{8})(-?)([aA-fF0-9]{4})(-?)([1-5][aA-fF0-9]{3})(-?)([aA-fF0-9]{4})(-?)([aA-fF0-9]{12})(}?)$`
 
 // UUID as in RFC 4122 https://datatracker.ietf.org/doc/html/rfc4122
 type UUID [16]byte
@@ -40,52 +43,81 @@ var Nil = UUID{}
 
 // as in https://datatracker.ietf.org/doc/html/rfc4122#appendix-C
 var (
-	NamespaceDNS, _  = ParseHex("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
-	NamespaceURL, _  = ParseHex("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
-	NamespaceOID, _  = ParseHex("6ba7b812-9dad-11d1-80b4-00c04fd430c8")
-	NamespaceX500, _ = ParseHex("6ba7b814-9dad-11d1-80b4-00c04fd430c8")
+	NamespaceDNS, _  = Parse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+	NamespaceURL, _  = Parse("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
+	NamespaceOID, _  = Parse("6ba7b812-9dad-11d1-80b4-00c04fd430c8")
+	NamespaceX500, _ = Parse("6ba7b814-9dad-11d1-80b4-00c04fd430c8")
 )
 
-const hexPattern = "^(urn\\:uuid\\:)?\\{?([a-z0-9]{8})-([a-z0-9]{4})-" +
-	"([1-5][a-z0-9]{3})-([a-z0-9]{4})-([a-z0-9]{12})\\}?$"
+var re = regexp.MustCompile(`({?|urn:uuid:)([aA-fF0-9]{8})(-?)([aA-fF0-9]{4})(-?)([1-5][aA-fF0-9]{3})(-?)([aA-fF0-9]{4})(-?)([aA-fF0-9]{12})(}?)$`)
 
-// ParseHex Crates uuid from hex formated string
-func ParseHex(s string) (u *UUID, err error) {
-	var re = regexp.MustCompile(hexPattern)
-	sm := re.FindStringSubmatch(s)
-	if sm == nil {
-		err = errors.New("invalid uuid")
-		return
+// const hexPattern = "^(urn\\:uuid\\:)?\\{?([a-z0-9]{8})-([a-z0-9]{4})-" +
+// 	"([1-5][a-z0-9]{3})-([a-z0-9]{4})-([a-z0-9]{12})\\}?$"
+
+func (u UUID) Valid() bool {
+	if len(u) != 16 {
+		return false
 	}
-	h := sm[2] + sm[4] + sm[5] + sm[6]
-	b, err := hex.DecodeString(h)
+	return true
+}
+
+func Valid(uuid string) bool {
+	s := re.FindString(uuid)
+	if s == "" {
+		return false
+	}
+	return true
+}
+
+// Format turn string any uuid format into canonical string
+func Format(uuid string) string {
+	if !Valid(uuid) {
+		return ""
+	}
+	rplc := []string{"urn", ":", "uuid", "{", "}"}
+	for _, r := range rplc {
+		uuid = strings.ReplaceAll(uuid, r, "")
+	}
+	if (uuid[8] != '-' || uuid[14] != '-' || uuid[18] != '-' || uuid[23] != '-') && len(uuid) == 32 {
+		uuid = uuid[:8] + "-" + uuid[8:12] + "-" + uuid[12:16] + "-" + uuid[16:20] + "-" + uuid[20:]
+	}
+	return uuid
+}
+
+// Parse return a valid UUID from string. It returns UUID{} (Nil) if not able to parse
+// func Parse(uuid string) UUID {
+// 	uuid = Format(uuid)
+// 	md := re.FindStringSubmatch(uuid)
+// 	if md == nil {
+// 		return Nil
+// 	}
+// 	hash := md[2] + md[3] + md[4] + md[5] + md[6]
+// 	b, err := hex.DecodeString(hash)
+// 	if err != nil {
+// 		return Nil
+// 	}
+// 	var u UUID
+// 	copy(u[:], b)
+// 	return u
+// }
+
+func Parse(str string) (uuid UUID, err error) {
+	// if len(str) != 36 || str[8:9] != "-" || str[13:14] != "-" || str[18:19] != "-" || str[23:24] != "-" {
+	// 	return uuid, errors.New("Invalid uuid")
+	// }
+	str = Format(str)
+	b, err := hex.DecodeString(str[0:8] + str[9:13] + str[14:18] + str[19:23] + str[24:])
 	if err != nil {
-		return
+		return uuid, errors.New("error decoding uuid")
 	}
-	u = new(UUID)
-	copy(u[:], b)
-	return
+	_, err = io.ReadFull(bytes.NewBuffer(b), uuid[:])
+	return uuid, err
 }
 
-func Parse(b []byte) (u *UUID, err error) {
-	if len(b) != 16 {
-		err = errors.New("invalid UUID")
-		return
-	}
-	u = new(UUID)
-	copy(u[:], b)
-	return
-}
-
-// New create a new V4 UUID
-func New() UUID {
-	return NewV4()
-}
-
-func (u *UUID) setHash(h hash.Hash, ns, name []byte) {
-	h.Write(ns[:])
-	h.Write(name)
-	copy(u[:], h.Sum([]byte{})[:16])
+func (u UUID) setHash(hash hash.Hash, ns, name []byte) {
+	hash.Write(ns[:])
+	hash.Write(name)
+	copy(u[:], hash.Sum([]byte{})[:16])
 }
 
 func NewV3(ns *UUID, name []byte) UUID {
@@ -97,6 +129,10 @@ func NewV3(ns *UUID, name []byte) UUID {
 	u.setVariant(VarRFC4122)
 	u.setVersion(3)
 	return u
+}
+
+func New() UUID {
+	return NewV4()
 }
 
 // New create a new V4 UUID
@@ -116,7 +152,7 @@ func NewV5(ns *UUID, name []byte) UUID {
 	return u
 }
 
-func (u *UUID) setVariant(v byte) {
+func (u UUID) setVariant(v byte) {
 	switch v {
 	case VarNCS:
 		u[8] = (u[8] | VarNCS) & 0xBF
@@ -144,7 +180,7 @@ func (u UUID) Variant() byte {
 }
 
 // Equal checks if current UUID is equals to another one
-func (u *UUID) Equal(ub UUID) bool {
+func (u UUID) Equal(ub UUID) bool {
 	return bytes.Equal(u[:], ub[:])
 }
 
@@ -163,8 +199,19 @@ func CompareAll(us ...UUID) bool {
 	return true
 }
 
-func (u *UUID) String() string {
-	return fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:])
+// func (u *UUID) String() string {
+// 	return fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:])
+// }
+
+func (u UUID) String() string {
+	b := make([]byte, 36)
+	b[8], b[13], b[18], b[23] = '-', '-', '-', '-'
+	hex.Encode(b[0:8], u[0:4])
+	hex.Encode(b[9:13], u[4:6])
+	hex.Encode(b[14:18], u[6:8])
+	hex.Encode(b[19:23], u[8:10])
+	hex.Encode(b[24:], u[10:])
+	return string(b)
 }
 
 func (u *UUID) Byte() []byte {
@@ -179,18 +226,24 @@ func (u *UUID) Version() uint8 {
 	return uint8(u[6] >> 4)
 }
 
-func FromString(s string) (UUID, error) {
-	var u UUID
-	err := u.UnmarshalText([]byte(s))
-	return u, err
+func (u UUID) URN() string {
+	if !u.Valid() {
+		return ""
+	}
+	var tb [45]byte
+	copy(tb[:], "urn:uuid:")
+	encodeHex(tb[9:], u)
+	return string(tb[:])
 }
 
-func (u *UUID) UnmarshalText(b []byte) (err error) {
-	err = u.decode(b)
-	return
-}
-
-func (u *UUID) decode(b []byte) (err error) {
-	u, err = ParseHex(string(b))
-	return err
+func encodeHex(b []byte, u UUID) {
+	hex.Encode(b[:], u[:4])
+	b[8] = '-'
+	hex.Encode(b[9:13], u[4:6])
+	b[13] = '-'
+	hex.Encode(b[14:18], u[6:8])
+	b[18] = '-'
+	hex.Encode(b[19:23], u[8:10])
+	b[23] = '-'
+	hex.Encode(b[24:], u[10:])
 }

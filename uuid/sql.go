@@ -22,12 +22,14 @@ func (u *UUID) Scan(src interface{}) error {
 		*u = src
 		return nil
 	case []byte:
-		if len(src) == 16 {
-			return u.UnmarshalBinary(src)
+		if len(src) != 16 {
+			u.Scan(string(src))
 		}
-		return u.UnmarshalText(src)
+		copy((*u)[:], src)
+		return nil
 	case string:
-		return u.UnmarshalText([]byte(src))
+		*u, _ = Parse(src)
+		return nil
 	}
 	return errors.New("uuid: errors while converting text to UUID")
 }
